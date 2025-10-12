@@ -1,4 +1,6 @@
 # GGSystemMonitor
+![Apex Pro TKL OLED Display of Temperatures](https://i.imgur.com/1GnrzHC.jpeg "Apex Pro TKL OLED Display of Temperatures")
+
 This is a custom application for SteelSeries GG software that imitates the long missing SystemMonitor application. It will display your CPU and GPU temperatures on the keyboard OLED screen, updating every two seconds. This will allow you to maintain an up to date GG software and carry over through updates, meaning you do not need to forcefully downgrade.
 
 **This is specifically designed for the SteelSeries Apex Pro keyboard.**
