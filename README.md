@@ -32,9 +32,9 @@ Open the **Triggers** tab.
 
 Click **New**.
 
-**Select "At log on"** for the begin task selection. We don't use "At startup" because I was running into issues with this script not starting since GG software doesn't seem to load first in time.
+**Select "At startup"** for the begin task selection.
 
-**Select "Delay task for:"** and put in 30 seconds.
+**Select "Delay task for:"** and put in 30 seconds. We put a delay after the system starts up to allow for the GG software to start first.
 ### Step 5:
 Open the **Actions** tab.
 
