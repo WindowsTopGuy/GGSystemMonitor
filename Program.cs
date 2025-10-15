@@ -1,12 +1,14 @@
-﻿using System;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Net.Http;
-using System.Text;
+﻿using LibreHardwareMonitor.Hardware;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using LibreHardwareMonitor.Hardware;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace GGSystemMonitor
 {
@@ -15,26 +17,29 @@ namespace GGSystemMonitor
         // Configuration
         private const string APP_NAME = "CUSTOM_SYSTEM_MONITOR";
         private const string EVENT_NAME = "SYS_MONITOR";
-        private const string COREPROPS_PATH = @"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json";
         private static HttpClient http = new HttpClient();
-        private static Computer computer;
         private static IHardware cpuHardware;
         private static IHardware gpuHardware;
+        private static float cpuMaxTemp;
+        private static float gpuMaxTemp;
         private static string baseUrl = null;
         private static int updateValue;
+        private static int screenUpdate;
+        private static bool gpuPasteWarning;
+        private static int textScrollPos;
 
         static void Main(string[] args)
         {
             try
             {
                 // --- Read SteelSeries local API address from coreProps.json ---
-                if (!File.Exists(COREPROPS_PATH))
+                if (!File.Exists(@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json"))
                 {
-                    Console.WriteLine($"coreProps.json not found at {COREPROPS_PATH}. Please verify SteelSeries GG installation path.");
+                    Console.WriteLine($"coreProps.json not found at {@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json"}. Please verify SteelSeries GG installation path.");
                     return;
                 }
 
-                string coreText = File.ReadAllText(COREPROPS_PATH);
+                string coreText = File.ReadAllText(@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json");
                 try
                 {
                     var j = JObject.Parse(coreText);
@@ -58,7 +63,7 @@ namespace GGSystemMonitor
                 BindEvent();
 
                 // --- Initialize LibreHardwareMonitor Computer ---
-                computer = new Computer()
+                Computer computer = new Computer()
                 {
                     IsCpuEnabled = true,
                     IsGpuEnabled = true
@@ -75,6 +80,7 @@ namespace GGSystemMonitor
                     if (hw.HardwareType.ToString().ToLower().Contains("cpu"))
                     {
                         cpuHardware = hw;
+                        cpuMaxTemp = GetCpuMaximum(cpuHardware.Name);
                         break;
                     }
                 }
@@ -83,27 +89,39 @@ namespace GGSystemMonitor
                     if (hw.HardwareType.ToString().ToLower().Contains("gpu"))
                     {
                         gpuHardware = hw;
+                        gpuMaxTemp = GetGpuMaximum(gpuHardware.Name);
                         break;
                     }
                 }
 
                 //Console.WriteLine("GGSystemMonitor started. Updating every 2 seconds. Press Ctrl+C to stop.");
 
+                double? cpuTemp = 0;
+                double? gpuTemp = 0;
+
                 // Main loop
                 while (true)
                 {
                     try
                     {
-                        double? cpu = GetCpuTemperature();
-                        double? gpu = GetGpuTemperature();
-                        SendToOled(cpu, gpu);
+                        if (screenUpdate == 0)
+                        {
+                            screenUpdate = 2000;
+                            cpuTemp = GetCpuTemperature();
+                            gpuTemp = GetGpuTemperature();
+
+                            double? hotspot = GetGpuHotSpot();
+                            gpuPasteWarning = hotspot.HasValue && hotspot - gpuTemp > 15;
+                        }
+                        SendToOled(BuildFirstLine(cpuTemp), BuildSecondLine(gpuTemp));
+                        screenUpdate -= 250;
                     }
                     catch (Exception ex)
                     {
                         // Log exceptions to file for troubleshooting
                         File.AppendAllText("GGSystemMonitor.log", DateTime.Now + " - Error: " + ex + Environment.NewLine);
                     }
-                    Thread.Sleep(2000);
+                    Thread.Sleep(250);
                 }
             }
             catch (Exception ex)
@@ -156,7 +174,107 @@ namespace GGSystemMonitor
             );
             PostJson("/bind_game_event", bind);
         }
-        private static void SendToOled(double? cpu, double? gpu)
+        private static string BuildFirstLine(double? cpuTemp)
+        {
+            string line;
+            if (cpuTemp.HasValue)
+            {
+                line = $"CPU: {cpuTemp.Value:F1}°C";
+                if (cpuTemp.Value >= cpuMaxTemp - 15)
+                {
+                    if (cpuTemp.Value >= cpuMaxTemp - 7)
+                    {
+                        if (screenUpdate % 500 == 0)
+                        {
+                            line = line.PadRight(14) + "🔥";
+                        }
+                    } else
+                    {
+                        switch (screenUpdate)
+                        {
+                            case 2000:
+                            case 1750:
+                            case 1000:
+                            case 750:
+                                line = line.PadRight(14) + "⚠";
+                                break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                line = "CPU: N/A";
+            }
+            return line;
+        }
+        private static string BuildSecondLine(double? gpuTemp)
+        {
+            if (gpuPasteWarning)
+            {
+                string warning = "                 Check GPU Thermal Paste!";
+                textScrollPos++;
+                if (textScrollPos > warning.Length)
+                {
+                    if (textScrollPos < warning.Length + 8)
+                    {
+                        return GetGpuTempLine(gpuTemp);
+                    }
+                    else if (textScrollPos < warning.Length + 16)
+                    {
+                        double? hotspot = GetGpuHotSpot();
+                        if (hotspot.HasValue)
+                        {
+                            return $"HOTSPOT: {hotspot.Value:F1}°C";
+                        }
+                        else
+                        {
+                            return $"HOT SPOT: N/A";
+                        }
+                    }
+                    textScrollPos = 0;
+                }
+                return warning.Substring(textScrollPos) + warning.Substring(0, textScrollPos);
+            }
+
+            return GetGpuTempLine(gpuTemp);
+        }
+        private static string GetGpuTempLine(double? gpuTemp)
+        {
+            string line;
+            if (gpuTemp.HasValue)
+            {
+                line = $"GPU: {gpuTemp.Value:F1}°C";
+                if (gpuTemp.Value >= gpuMaxTemp - 15)
+                {
+                    if (gpuTemp.Value >= gpuMaxTemp - 7)
+                    {
+                        if (screenUpdate % 500 == 0)
+                        {
+                            line = line.PadRight(14) + "🔥";
+                        }
+                    }
+                    else
+                    {
+                        switch (screenUpdate)
+                        {
+                            case 2000:
+                            case 1750:
+                            case 1000:
+                            case 750:
+                                line = line.PadRight(14) + "⚠";
+                                break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                line = "GPU: N/A";
+            }
+            return line;
+        }
+        private static void SendToOled(string line1, string line2)
         {
             if (updateValue++ == 2)
                 updateValue = 0;
@@ -167,8 +285,8 @@ namespace GGSystemMonitor
                 new JProperty("data", new JObject(
                     new JProperty("value", updateValue),
                     new JProperty("frame", new JObject(
-                        new JProperty("text_line_1", cpu.HasValue ? $"CPU: {cpu.Value:F1}°C" : "CPU: N/A"),
-                        new JProperty("text_line_2", gpu.HasValue ? $"GPU: {gpu.Value:F1}°C" : "GPU: N/A")
+                        new JProperty("text_line_1", line1),
+                        new JProperty("text_line_2", line2)
                     ))
                 ))
             );
@@ -195,18 +313,26 @@ namespace GGSystemMonitor
 
             cpuHardware.Update();
 
-            // Try to read Package sensor first (average / package temp)
-            var package = cpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature && s.Name == "Package");
+            // Try to read Average sensor first
+            var average = cpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature && s.Name != null && s.Name.ToLower().Contains("average"));
+            if (average != null && average.Value.HasValue)
+                return (double) average.Value.Value;
+
+            // Try to read Package sensor next
+            var package = cpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature && s.Name != null && s.Name.ToLower().Contains("package"));
             if (package != null && package.Value.HasValue)
                 return (double) package.Value.Value;
 
             // Fallback: average all "Core" temp sensors
+            Regex coreSensorRegex = new Regex(@"core #\d+$");
             var coreTemps = cpuHardware.Sensors
-            .Where(s => s.SensorType == SensorType.Temperature && s.Name != null && s.Name.StartsWith("Core"))
-            .Select(s => s.Value)
-            .Where(v => v.HasValue)
-            .Select(v => (double)v.Value)
-            .ToList();
+                .Where(s => s.SensorType == SensorType.Temperature 
+                    && s.Name != null 
+                    && coreSensorRegex.IsMatch(s.Name.ToLower()))
+                .Select(s => s.Value)
+                .Where(v => v.HasValue)
+                .Select(v => (double) v.Value)
+                .ToList();
 
             if (coreTemps.Count > 0)
                 return coreTemps.Average();
@@ -225,8 +351,8 @@ namespace GGSystemMonitor
 
             gpuHardware.Update();
 
-            // Look for a sensor named "GPU Core" or first temperature sensor
-            var gpuCore = gpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature && s.Name != null && s.Name.ToLower().Contains("gpu"));
+            // Look for core sensor
+            var gpuCore = gpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature && s.Name != null && s.Name.ToLower().Contains("core"));
             if (gpuCore != null && gpuCore.Value.HasValue)
                 return (double) gpuCore.Value.Value;
 
@@ -235,6 +361,170 @@ namespace GGSystemMonitor
                 return (double) firstTemp.Value.Value;
 
             return null;
+        }
+        private static double? GetGpuHotSpot()
+        {
+            if (gpuHardware == null)
+                return null;
+
+            var gpuCore = gpuHardware.Sensors.FirstOrDefault(s => s.SensorType == SensorType.Temperature 
+                && s.Name != null 
+                && (s.Name.ToLower().Contains("hot spot") || s.Name.ToLower().Contains("hotspot")));
+            if (gpuCore != null && gpuCore.Value.HasValue)
+                return (double)gpuCore.Value.Value;
+
+            return null;
+        }
+        private static float GetCpuMaximum(string CpuName)
+        {
+            if (!string.IsNullOrEmpty(CpuName))
+                return 100.0f;
+            Dictionary<string, float> CpuMaxTemps = new Dictionary<string, float>
+            {
+                // Intel CPUs
+                { "Intel Core i9-13900K", 100.0f },
+                { "Intel Core i7-13700K", 100.0f },
+                { "Intel Core i5-13600K", 100.0f },
+                { "Intel Core i9-12900K", 100.0f },
+                { "Intel Core i7-12700K", 100.0f },
+                { "Intel Core i5-12600K", 100.0f },
+                { "Intel Core i9-11900K", 100.0f },
+                { "Intel Core i7-11700K", 100.0f },
+                { "Intel Core i5-11600K", 100.0f },
+                { "Intel Core i9-10900K", 100.0f },
+                { "Intel Core i7-10700K", 100.0f },
+                { "Intel Core i5-10600K", 100.0f },
+                { "Intel Core i9-9900K", 100.0f },
+                { "Intel Core i7-9700K", 100.0f },
+                { "Intel Core i5-9600K", 100.0f },
+                { "Intel Core i7-8700K", 100.0f },
+                { "Intel Core i5-8600K", 100.0f },
+                { "Intel Core i7-7700K", 100.0f },
+                { "Intel Core i5-7600K", 100.0f },
+                { "Intel Core i7-6700K", 100.0f },
+                { "Intel Core i5-6600K", 100.0f },
+
+                // AMD CPUs
+                { "AMD Ryzen 9 7950X", 95.0f },
+                { "AMD Ryzen 9 7900X", 95.0f },
+                { "AMD Ryzen 7 7700X", 95.0f },
+                { "AMD Ryzen 7 7700", 95.0f },
+                { "AMD Ryzen 5 7600X", 95.0f },
+                { "AMD Ryzen 5 7600", 95.0f },
+                { "AMD Ryzen 9 5950X", 90.0f },
+                { "AMD Ryzen 9 5900X", 90.0f },
+                { "AMD Ryzen 7 5800X", 90.0f },
+                { "AMD Ryzen 7 5800X3D", 90.0f },
+                { "AMD Ryzen 5 5600X", 95.0f },
+                { "AMD Ryzen 5 5600", 95.0f },
+                { "AMD Ryzen 7 5700X", 95.0f },
+                { "AMD Ryzen 5 5500", 95.0f },
+                { "AMD Ryzen 5 3600", 95.0f },
+                { "AMD Ryzen 5 3600X", 95.0f },
+                { "AMD Ryzen 5 3400G", 95.0f },
+                { "AMD Ryzen 5 3400GE", 95.0f },
+                { "AMD Ryzen 3 3300X", 95.0f },
+                { "AMD Ryzen 3 3200G", 95.0f },
+                { "AMD Ryzen 3 3200GE", 95.0f },
+                { "AMD Ryzen 7 2700X", 85.0f },
+                { "AMD Ryzen 7 2700", 85.0f },
+                { "AMD Ryzen 5 2600X", 95.0f },
+                { "AMD Ryzen 5 2600", 95.0f },
+                { "AMD Ryzen 3 2300X", 95.0f },
+                { "AMD Ryzen 3 2200G", 95.0f },
+                { "AMD Ryzen 3 2200GE", 95.0f },
+                { "AMD Ryzen 7 1700X", 95.0f },
+                { "AMD Ryzen 7 1700", 95.0f },
+                { "AMD Ryzen 5 1600X", 95.0f },
+                { "AMD Ryzen 5 1600", 95.0f },
+                { "AMD Ryzen 3 1300X", 95.0f },
+                { "AMD Ryzen 3 1300", 95.0f },
+            };
+
+            if (CpuMaxTemps.ContainsKey(CpuName))
+                return CpuMaxTemps[CpuName];
+
+            if (CpuName.Contains("Intel"))
+                return 100.0f;
+
+            return 95.0f;
+        }
+        private static float GetGpuMaximum(string GpuName)
+        {
+            if (!string.IsNullOrEmpty(GpuName))
+                return 92.0f;
+            Dictionary<string, float> GpuMaxTemps = new Dictionary<string, float>
+            {
+                // NVIDIA GPUs
+                { "NVIDIA GeForce RTX 5090", 90.0f },
+                { "NVIDIA GeForce RTX 5080", 88.0f },
+                { "NVIDIA GeForce RTX 5070 Ti", 88.0f },
+                { "NVIDIA GeForce RTX 5070", 85.0f },
+
+                { "NVIDIA GeForce RTX 4090", 90.0f },
+                { "NVIDIA GeForce RTX 4080", 90.0f },
+                { "NVIDIA GeForce RTX 4070 Ti", 90.0f },
+                { "NVIDIA GeForce RTX 4070", 90.0f },
+                { "NVIDIA GeForce RTX 4060 Ti", 90.0f },
+                { "NVIDIA GeForce RTX 4060", 90.0f },
+
+                { "NVIDIA GeForce RTX 3090 Ti", 92.0f },
+                { "NVIDIA GeForce RTX 3090", 92.0f },
+                { "NVIDIA GeForce RTX 3080 Ti", 93.0f },
+                { "NVIDIA GeForce RTX 3080", 93.0f },
+                { "NVIDIA GeForce RTX 3070 Ti", 93.0f },
+                { "NVIDIA GeForce RTX 3070", 93.0f },
+                { "NVIDIA GeForce RTX 3060 Ti", 93.0f },
+                { "NVIDIA GeForce RTX 3060", 93.0f },
+
+                { "NVIDIA GeForce GTX 1080 Ti", 94.0f },
+                { "NVIDIA GeForce GTX 1080", 94.0f },
+                { "NVIDIA GeForce GTX 1070 Ti", 94.0f },
+                { "NVIDIA GeForce GTX 1070", 94.0f },
+                { "NVIDIA GeForce GTX 1060", 94.0f },
+                { "NVIDIA GeForce GTX 1050 Ti", 94.0f },
+                { "NVIDIA GeForce GTX 1050", 94.0f },
+
+                // AMD Radeon GPUs
+                { "AMD Radeon RX 7900 XTX", 110.0f },
+                { "AMD Radeon RX 7900 XT", 110.0f },
+                { "AMD Radeon RX 7800 XT", 110.0f },
+                { "AMD Radeon RX 7800", 110.0f },
+                { "AMD Radeon RX 7700 XT", 110.0f },
+                { "AMD Radeon RX 7700", 110.0f },
+                { "AMD Radeon RX 7600 XT", 110.0f },
+                { "AMD Radeon RX 7600", 110.0f },
+
+                { "AMD Radeon RX 6950 XT", 110.0f },
+                { "AMD Radeon RX 6900 XT", 110.0f },
+                { "AMD Radeon RX 6800 XT", 110.0f },
+                { "AMD Radeon RX 6800", 110.0f },
+                { "AMD Radeon RX 6700 XT", 110.0f },
+                { "AMD Radeon RX 6700", 110.0f },
+                { "AMD Radeon RX 6600 XT", 110.0f },
+                { "AMD Radeon RX 6600", 110.0f },
+                { "AMD Radeon RX 6500 XT", 110.0f },
+                { "AMD Radeon RX 6500", 110.0f },
+                { "AMD Radeon RX 6400", 110.0f },
+
+                { "AMD Radeon RX 5700 XT", 110.0f },
+                { "AMD Radeon RX 5700", 110.0f },
+                { "AMD Radeon RX 5600 XT", 110.0f },
+                { "AMD Radeon RX 5600", 110.0f },
+                { "AMD Radeon RX 5500 XT", 110.0f },
+                { "AMD Radeon RX 5500", 110.0f },
+                { "AMD Radeon RX 5300 XT", 110.0f },
+                { "AMD Radeon RX 5300", 110.0f },
+                { "AMD Radeon RX 5200", 110.0f },
+            };
+
+            if (GpuMaxTemps.ContainsKey(GpuName))
+                return GpuMaxTemps[GpuName];
+
+            if (GpuName.Contains("AMD Radeon"))
+                return 110.0f;
+
+            return 92.0f;
         }
     }
 }
