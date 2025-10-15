@@ -9,9 +9,19 @@ The application is a .NET app written in C#. It was designed on Windows 10 and n
 
 To monitor the system temperatures, LibreHardwareMonitor is used and included. On many systems, the CPU temperature sensors are protected by an extra layer of security. **If you are seeing on your display that the CPU temperature is reading as N/A**, then you must run the exe file as administrator to fix this!
 
-The script itself runs in the background and uses only ~7 MB of memory.
+The script itself runs in the background and uses only ~8 MB of memory.
 
 There may be issues with reading the CPU temperature on certain systems. I myself designed it for my intel CPU system. In theory it should be able to work on any CPU, please create an issue if you face any problems!
+
+## Features
+
+The CPU average core temperature will be displayed on the first line, the fallback is the CPU package sensor, the extra fallback is to manually calculate the average from the cores. The GPU core temperature will be displayed on the second line.
+
+#### Warning Indicators
+A large list of commonly known CPUs and GPUs is included within the script. When the script is started, it will detect your hardware and find the manufacturer's critical temperature levels. When the temperature for either your CPU or GPU reaches within **15°C** of the critical temperature, a small '⚠' icon will start blinking on the far right of the line to indicate that the hardware is reaching potentially dangerous levels of heat. When the temperature reaches within **7°C** of the critical temperature, a faster '🔥' icon will start blinking instead, indicating that the hardware is reaching very close to the critical temperature.
+
+#### GPU Thermal Cooling Detection
+The script will also monitor your GPU's hot spot sensor. When a difference of **15°C** is reached between the GPU core and hot spot, the bottom line of the OLED will begin to display scrolling text, indicating to the user that there is an issue with the thermal cooling within the GPU and that serious damage can happen if it is not checked. It will also swap between the scrolling text momentarily to display the current GPU core temperature and then the current GPU hot spot temperature for the user to access the levels.
 
 ## Automatic Startup Task
 This section is instructions on making the custom application run upon starting your computer so that it is always displaying your system temperatures on the OLED without the need to run the exe file everytime. **These instructions are for Windows systems ONLY, specifically for Windows 10 but can be followed along roughly for other windows systems.**
