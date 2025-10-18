@@ -23,10 +23,10 @@ There is a settings file in the applications folder called "settings.json" which
 ### Caps Lock Indicator
 On the top line, right indented, it will display a '🡅' icon if your keyboard is in caps lock mode.
 
-#### Warning Indicators
+### Warning Indicators
 A large list of commonly known CPUs and GPUs is included within the script. When the script is started, it will detect your hardware and find the manufacturer's critical temperature levels. When the temperature for either your CPU or GPU reaches within **15°C** of the critical temperature, a small '⚠' icon will start blinking on the far right of the line to indicate that the hardware is reaching potentially dangerous levels of heat. When the temperature reaches within **7°C** of the critical temperature, a faster '🔥' icon will start blinking instead, indicating that the hardware is reaching very close to the critical temperature.
 
-#### GPU Thermal Paste Health Monitoring
+### GPU Thermal Paste Health Monitoring
 The script will also monitor your GPU's hot spot sensor. When a difference of **15°C** is reached between the GPU core and hot spot, the bottom line of the OLED will begin to display scrolling text, indicating to the user that there is an issue with the thermal cooling within the GPU and that serious damage can happen if it is not checked. It will also swap between the scrolling text momentarily to display the current GPU core temperature and then the current GPU hot spot temperature for the user to assess the levels.
 
 ## Automatic Startup Task
