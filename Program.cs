@@ -7,8 +7,12 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Windows.Forms;
+using static GGSystemMonitor.Program;
+using JsonSerializer = System.Text.Json.JsonSerializer;
 
 namespace GGSystemMonitor
 {
@@ -20,26 +24,76 @@ namespace GGSystemMonitor
         private static HttpClient http = new HttpClient();
         private static IHardware cpuHardware;
         private static IHardware gpuHardware;
-        private static float cpuMaxTemp;
-        private static float gpuMaxTemp;
         private static string baseUrl = null;
         private static int updateValue;
         private static int screenUpdate;
         private static bool gpuPasteWarning;
+        private static int gpuPasteFPCounter;
         private static int textScrollPos;
+
+        private static AppSettings settings;
+        private static float cpuWarningTemperature;
+        private static float cpuCriticalTemperature;
+        private static float gpuWarningTemperature;
+        private static float gpuCriticalTemperature;
 
         static void Main(string[] args)
         {
             try
             {
-                // --- Read SteelSeries local API address from coreProps.json ---
-                if (!File.Exists(@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json"))
+                // --- Initialize LibreHardwareMonitor Computer ---
+                Computer computer = new Computer()
                 {
-                    Console.WriteLine($"coreProps.json not found at {@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json"}. Please verify SteelSeries GG installation path.");
+                    IsCpuEnabled = true,
+                    IsGpuEnabled = true
+                };
+                computer.Open();
+
+                // Give LHM a short moment to initialize internal polling
+                Thread.Sleep(500);
+
+                // Init the hardware for the cpu and gpu
+                foreach (var hw in computer.Hardware)
+                {
+                    // HardwareType.ToString() contains "Cpu" for CPU entries
+                    if (hw.HardwareType.ToString().ToLower().Contains("cpu"))
+                    {
+                        cpuHardware = hw;
+                        break;
+                    }
+                }
+                foreach (var hw in computer.Hardware)
+                {
+                    if (hw.HardwareType.ToString().ToLower().Contains("gpu"))
+                    {
+                        gpuHardware = hw;
+                        break;
+                    }
+                }
+
+                // --- Initialize Settings.json file ---
+                settings = SettingsManager.LoadSettings();
+
+                FileSystemWatcher watcher = new FileSystemWatcher(AppContext.BaseDirectory, "settings.json");
+                watcher.Changed += (s, e) =>
+                {
+                    try
+                    {
+                        Thread.Sleep(100); // brief delay for file lock
+                        settings = SettingsManager.LoadSettings();
+                    }
+                    catch { }
+                };
+                watcher.EnableRaisingEvents = true;
+
+                // --- Read SteelSeries local API address from coreProps.json ---
+                if (!File.Exists(settings.GGEngineCorePropsPath))
+                {
+                    Console.WriteLine($"coreProps.json not found at {settings.GGEngineCorePropsPath}. Please verify SteelSeries GG installation path.");
                     return;
                 }
 
-                string coreText = File.ReadAllText(@"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json");
+                string coreText = File.ReadAllText(settings.GGEngineCorePropsPath);
                 try
                 {
                     var j = JObject.Parse(coreText);
@@ -62,56 +116,43 @@ namespace GGSystemMonitor
                 RegisterEvent();
                 BindEvent();
 
-                // --- Initialize LibreHardwareMonitor Computer ---
-                Computer computer = new Computer()
-                {
-                    IsCpuEnabled = true,
-                    IsGpuEnabled = true
-                };
-                computer.Open();
-
-                // Give LHM a short moment to initialize internal polling
-                Thread.Sleep(500);
-
-                // Init the hardware for the cpu and gpu
-                foreach (var hw in computer.Hardware)
-                {
-                    // HardwareType.ToString() contains "Cpu" for CPU entries
-                    if (hw.HardwareType.ToString().ToLower().Contains("cpu"))
-                    {
-                        cpuHardware = hw;
-                        cpuMaxTemp = GetCpuMaximum(cpuHardware.Name);
-                        break;
-                    }
-                }
-                foreach (var hw in computer.Hardware)
-                {
-                    if (hw.HardwareType.ToString().ToLower().Contains("gpu"))
-                    {
-                        gpuHardware = hw;
-                        gpuMaxTemp = GetGpuMaximum(gpuHardware.Name);
-                        break;
-                    }
-                }
-
                 //Console.WriteLine("GGSystemMonitor started. Updating every 2 seconds. Press Ctrl+C to stop.");
 
                 double? cpuTemp = 0;
                 double? gpuTemp = 0;
+
+                int temperatureUpdate = 0;
 
                 // Main loop
                 while (true)
                 {
                     try
                     {
+                        if (temperatureUpdate <= 0)
+                        {
+                            temperatureUpdate = settings.TemperatureUpdateIntervalMs;
+                            cpuTemp = GetCpuTemperature();
+                            gpuTemp = GetGpuTemperature();
+                        }
+                        temperatureUpdate -= 250;
+
+                        if (settings.EnableGPUThermalPasteMonitoring)
+                        {
+                            double? hotspot = GetGpuHotSpot();
+                            if (hotspot.HasValue && hotspot - gpuTemp > 15)
+                            {
+                                gpuPasteFPCounter++;
+                            }
+                            else if (gpuPasteFPCounter > 0)
+                            {
+                                gpuPasteFPCounter--;
+                            }
+                            gpuPasteWarning = gpuPasteFPCounter >= 12;
+                        }
+
                         if (screenUpdate == 0)
                         {
                             screenUpdate = 2000;
-                            cpuTemp = GetCpuTemperature();
-                            gpuTemp = GetGpuTemperature();
-
-                            double? hotspot = GetGpuHotSpot();
-                            gpuPasteWarning = hotspot.HasValue && hotspot - gpuTemp > 15;
                         }
                         SendToOled(BuildFirstLine(cpuTemp), BuildSecondLine(gpuTemp));
                         screenUpdate -= 250;
@@ -128,6 +169,75 @@ namespace GGSystemMonitor
             {
                 File.AppendAllText("GGSystemMonitor.log", DateTime.Now + " - Fatal: " + ex + Environment.NewLine);
             }
+        }
+        public class AppSettings
+        {
+            public string GGEngineCorePropsPath { get; set; } = @"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json";
+            public int TemperatureUpdateIntervalMs { get; set; } = 2000;
+            public bool EnableCPUTemperatureWarningIndicators { get; set; } = true;
+            public bool EnableGPUTemperatureWarningIndicators { get; set; } = true;
+            public object WarningCPUTemperature { get; set; } = "AUTO";
+            public object CriticalCPUTemperature { get; set; } = "AUTO";
+            public object WarningGPUTemperature { get; set; } = "AUTO";
+            public object CriticalGPUTemperature { get; set; } = "AUTO";
+            public bool EnableGPUThermalPasteMonitoring { get; set; } = true;
+            public bool ShowCapsLockIndicator { get; set; } = true;
+        }
+        public static class SettingsManager
+        {
+            private static readonly string SettingsFilePath =
+                Path.Combine(AppContext.BaseDirectory, "settings.json");
+
+            public static AppSettings LoadSettings()
+            {
+                if (!File.Exists(SettingsFilePath))
+                {
+                    var defaultSettings = new AppSettings();
+                    string json = JsonSerializer.Serialize(defaultSettings, new JsonSerializerOptions { WriteIndented = true });
+                    File.WriteAllText(SettingsFilePath, json);
+                    return defaultSettings;
+                }
+                string fileJson = File.ReadAllText(SettingsFilePath);
+                AppSettings appSettings = JsonSerializer.Deserialize<AppSettings>(fileJson) ?? new AppSettings();
+                cpuCriticalTemperature = GetSettingParse(appSettings.CriticalCPUTemperature, GetCpuMaximum(cpuHardware.Name));
+                cpuWarningTemperature = GetSettingParse(appSettings.WarningCPUTemperature, cpuCriticalTemperature - 15);
+                if (cpuWarningTemperature >= cpuCriticalTemperature)
+                {
+                    cpuWarningTemperature = cpuCriticalTemperature - 1;
+                }
+                gpuCriticalTemperature = GetSettingParse(appSettings.CriticalGPUTemperature, GetGpuMaximum(gpuHardware.Name));
+                gpuWarningTemperature = GetSettingParse(appSettings.WarningGPUTemperature, gpuCriticalTemperature - 15);
+                if (gpuWarningTemperature >= gpuCriticalTemperature)
+                {
+                    gpuWarningTemperature = gpuCriticalTemperature - 1;
+                }
+                return appSettings;
+            }
+        }
+        private static float GetSettingParse(object setting, float defaultValue)
+        {
+            Console.WriteLine("setting is "+setting);
+            if (setting is string s && s.ToLower().Equals("auto"))
+            {
+                return defaultValue;
+            }
+            if (setting is JsonElement element)
+            {
+                if (element.ValueKind == JsonValueKind.Number)
+                    return element.GetSingle();
+                if (element.ValueKind == JsonValueKind.String &&
+                    float.TryParse(element.GetString(), out float val))
+                    return val;
+            }
+            if (setting is IConvertible convertible)
+            {
+                try
+                {
+                    return Convert.ToSingle(convertible);
+                }
+                catch { }
+            }
+            return defaultValue;
         }
         private static void RegisterApp()
         {
@@ -177,18 +287,31 @@ namespace GGSystemMonitor
         private static string BuildFirstLine(double? cpuTemp)
         {
             string line;
+            bool capsLock = settings.ShowCapsLockIndicator && Control.IsKeyLocked(Keys.CapsLock);
             if (cpuTemp.HasValue)
             {
                 line = $"CPU: {cpuTemp.Value:F1}°C";
-                if (cpuTemp.Value >= cpuMaxTemp - 15)
+                if (settings.EnableCPUTemperatureWarningIndicators && cpuTemp.Value >= cpuWarningTemperature)
                 {
-                    if (cpuTemp.Value >= cpuMaxTemp - 7)
+                    if (cpuTemp.Value >= cpuCriticalTemperature - ((cpuCriticalTemperature - cpuWarningTemperature) / 2.0))
                     {
                         if (screenUpdate % 500 == 0)
                         {
-                            line = line.PadRight(14) + "🔥";
+                            if (capsLock)
+                            {
+                                line = line.PadRight(12) + "🡅" + "🔥";
+                            }
+                            else
+                            {
+                                line = line.PadRight(14) + "🔥";
+                            }
                         }
-                    } else
+                        else if (capsLock)
+                        {
+                            line = line.PadRight(12) + "🡅";
+                        }
+                    }
+                    else
                     {
                         switch (screenUpdate)
                         {
@@ -196,15 +319,37 @@ namespace GGSystemMonitor
                             case 1750:
                             case 1000:
                             case 750:
-                                line = line.PadRight(14) + "⚠";
+                            case 0:
+                                if (capsLock)
+                                {
+                                    line = line.PadRight(12) + "🡅" + "⚠";
+                                }
+                                else
+                                {
+                                    line = line.PadRight(14) + "⚠";
+                                }
+                                break;
+                            default:
+                                if (capsLock)
+                                {
+                                    line = line.PadRight(12) + "🡅";
+                                }
                                 break;
                         }
                     }
+                }
+                else if (capsLock)
+                {
+                    line = line.PadRight(14) + "🡅";
                 }
             }
             else
             {
                 line = "CPU: N/A";
+                if (capsLock)
+                {
+                    line = line.PadRight(14) + "🡅";
+                }
             }
             return line;
         }
@@ -245,9 +390,9 @@ namespace GGSystemMonitor
             if (gpuTemp.HasValue)
             {
                 line = $"GPU: {gpuTemp.Value:F1}°C";
-                if (gpuTemp.Value >= gpuMaxTemp - 15)
+                if (settings.EnableGPUTemperatureWarningIndicators && gpuTemp.Value >= gpuWarningTemperature)
                 {
-                    if (gpuTemp.Value >= gpuMaxTemp - 7)
+                    if (gpuTemp.Value >= gpuCriticalTemperature - ((gpuCriticalTemperature - gpuWarningTemperature) / 2.0))
                     {
                         if (screenUpdate % 500 == 0)
                         {
@@ -262,6 +407,7 @@ namespace GGSystemMonitor
                             case 1750:
                             case 1000:
                             case 750:
+                            case 0:
                                 line = line.PadRight(14) + "⚠";
                                 break;
                         }
