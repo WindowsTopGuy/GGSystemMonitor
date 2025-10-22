@@ -87,29 +87,7 @@ namespace GGSystemMonitor
                 watcher.EnableRaisingEvents = true;
 
                 // --- Read SteelSeries local API address from coreProps.json ---
-                if (!File.Exists(settings.GGEngineCorePropsPath))
-                {
-                    Console.WriteLine($"coreProps.json not found at {settings.GGEngineCorePropsPath}. Please verify SteelSeries GG installation path.");
-                    return;
-                }
-
-                string coreText = File.ReadAllText(settings.GGEngineCorePropsPath);
-                try
-                {
-                    var j = JObject.Parse(coreText);
-                    var addr = j["address"]?.ToString();
-                    if (string.IsNullOrEmpty(addr))
-                    {
-                        Console.WriteLine("Could not find 'address' field in coreProps.json");
-                        return;
-                    }
-                    baseUrl = "http://" + addr;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Failed to parse coreProps.json: " + ex.Message);
-                    return;
-                }
+                GetGGAddress();
 
                 // --- Register app/events with SteelSeries GameSense ---
                 RegisterApp();
@@ -172,7 +150,7 @@ namespace GGSystemMonitor
         }
         public class AppSettings
         {
-            public string GGEngineCorePropsPath { get; set; } = @"C:\ProgramData\SteelSeries\SteelSeries Engine 3\coreProps.json";
+            public string GGEngineCorePropsPath { get; set; } = @"C:/ProgramData/SteelSeries/SteelSeries Engine 3/coreProps.json";
             public int TemperatureUpdateIntervalMs { get; set; } = 2000;
             public bool EnableCPUTemperatureWarningIndicators { get; set; } = true;
             public bool EnableGPUTemperatureWarningIndicators { get; set; } = true;
@@ -195,7 +173,6 @@ namespace GGSystemMonitor
                     var defaultSettings = new AppSettings();
                     string json = JsonSerializer.Serialize(defaultSettings, new JsonSerializerOptions { WriteIndented = true });
                     File.WriteAllText(SettingsFilePath, json);
-                    return defaultSettings;
                 }
                 string fileJson = File.ReadAllText(SettingsFilePath);
                 AppSettings appSettings = JsonSerializer.Deserialize<AppSettings>(fileJson) ?? new AppSettings();
@@ -216,7 +193,6 @@ namespace GGSystemMonitor
         }
         private static float GetSettingParse(object setting, float defaultValue)
         {
-            Console.WriteLine("setting is "+setting);
             if (setting is string s && s.ToLower().Equals("auto"))
             {
                 return defaultValue;
@@ -238,6 +214,31 @@ namespace GGSystemMonitor
                 catch { }
             }
             return defaultValue;
+        }
+        private static void GetGGAddress()
+        {
+            if (!File.Exists(settings.GGEngineCorePropsPath))
+            {
+                File.AppendAllText("GGSystemMonitor.log", DateTime.Now + $" - coreProps.json not found at {settings.GGEngineCorePropsPath}. Please verify SteelSeries GG installation path and update in the settings.json file!" + Environment.NewLine);
+                return;
+            }
+            string coreText = File.ReadAllText(settings.GGEngineCorePropsPath);
+            try
+            {
+                var j = JObject.Parse(coreText);
+                var addr = j["address"]?.ToString();
+                if (string.IsNullOrEmpty(addr))
+                {
+                    File.AppendAllText("GGSystemMonitor.log", DateTime.Now + " - Could not find 'address' field in coreProps.json" + Environment.NewLine);
+                    return;
+                }
+                baseUrl = "http://" + addr;
+            }
+            catch (Exception ex)
+            {
+                File.AppendAllText("GGSystemMonitor.log", DateTime.Now + " - Failed to parse coreProps.json: " + ex.Message + Environment.NewLine);
+                return;
+            }
         }
         private static void RegisterApp()
         {
@@ -450,6 +451,7 @@ namespace GGSystemMonitor
             catch (Exception ex)
             {
                 File.AppendAllText("GGSystemMonitor.log", DateTime.Now + " - PostJson error: " + ex + Environment.NewLine);
+                GetGGAddress();
             }
         }
         private static double? GetCpuTemperature()
