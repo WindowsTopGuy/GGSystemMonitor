@@ -116,10 +116,14 @@ namespace GGSystemMonitor
 
                         if (settings.EnableGPUThermalPasteMonitoring)
                         {
+                            // Check for GPU core and hotspot temperature difference of at least 15 celsius
                             double? hotspot = GetGpuHotSpot();
                             if (hotspot.HasValue && hotspot - gpuTemp > 15)
                             {
-                                gpuPasteFPCounter++;
+                                if (gpuPasteFPCounter < 48)
+                                {
+                                    gpuPasteFPCounter++;
+                                }
                             }
                             else if (gpuPasteFPCounter > 0)
                             {
@@ -362,11 +366,11 @@ namespace GGSystemMonitor
                 textScrollPos++;
                 if (textScrollPos > warning.Length)
                 {
-                    if (textScrollPos < warning.Length + 8)
+                    if (textScrollPos < warning.Length + 16)
                     {
                         return GetGpuTempLine(gpuTemp);
                     }
-                    else if (textScrollPos < warning.Length + 16)
+                    else if (textScrollPos < warning.Length + 32)
                     {
                         double? hotspot = GetGpuHotSpot();
                         if (hotspot.HasValue)
